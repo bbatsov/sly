@@ -30,6 +30,9 @@
    (button-type-put 'sly-db-frame
                     'sly-mrepl-copy-call-to-repl
                     'sly-db-copy-call-to-repl)
+   ;; (button-type-put 'sly-db-condition
+   ;;                  'sly-mrepl-copy-part-to-repl
+   ;;                  'sly-db-copy-condition-to-repl)
    (eval-after-load "sly-trace-dialog"
      `(progn
         (button-type-put 'sly-trace-dialog-part
@@ -188,10 +191,10 @@ for output printed to the REPL (not for evaluation results)")
   (with-current-buffer (sly-channel-get self 'buffer)
     (sly-mrepl--insert-results results)))
 
-(sly-define-channel-method listener :evaluation-aborted (&optional condition)
+(sly-define-channel-method listener :evaluation-aborted (&optional _condition)
   (with-current-buffer (sly-channel-get self 'buffer)
     (sly-mrepl--catch-up)
-    (sly-mrepl--insert-note (format "Evaluation aborted on %s" condition))))
+    (sly-mrepl--insert-note (format "Evaluation aborted"))))
 
 (sly-define-channel-method listener :write-string (string)
   (with-current-buffer (sly-channel-get self 'buffer)
@@ -399,47 +402,47 @@ for output printed to the REPL (not for evaluation results)")
                          '(font-lock-face sly-mrepl-prompt-face))))
 
 (defun sly-mrepl--insert-prompt (package prompt error-level &optional condition)
-  (sly-mrepl--accept-process-output)
-  (overlay-put sly-mrepl--last-prompt-overlay 'face 'bold)
-  (sly-mrepl--ensure-newline)
-  (sly-mrepl--catch-up)
-  (let ((beg (marker-position (sly-mrepl--mark))))
-    (sly-mrepl--insert
-     (propertize
-      (concat
-       (when (cl-plusp error-level)
-         (concat (sly-make-action-button
-                  (format "[%d]" error-level)
-                  #'sly-db-pop-to-debugger-maybe)
-                 " "))
+  (if condition
+      ;; When CONDITION is non-nil, copy it to the REPL. The prompt
+      ;; insertion will happen then, via this very same function
+      ;; called with CONDITION as nil.
+      ;; 
+      (sly-db-copy-condition-to-repl 'automatic)
+    (sly-mrepl--accept-process-output)
+    (overlay-put sly-mrepl--last-prompt-overlay 'face 'bold)
+    (sly-mrepl--catch-up)
+    (sly-mrepl--ensure-newline)
+    (let ((beg (marker-position (sly-mrepl--mark))))
+      (sly-mrepl--insert
        (propertize
-        (concat prompt "> ")
-        'face 'sly-mrepl-prompt-face
-        'font-lock-face 'sly-mrepl-prompt-face))
-      'sly-mrepl--prompt (downcase package)))
-    (move-overlay sly-mrepl--last-prompt-overlay beg (sly-mrepl--mark)))
-  (sly-mrepl--ensure-prompt-face)
-  (when condition
-    (sly-mrepl--insert-note (format "Evaluation errored on %s" condition)))
-  (buffer-enable-undo))
+        (concat
+         (when (cl-plusp error-level)
+           (concat (sly-make-action-button
+                    (format "[%d]" error-level)
+                    #'sly-db-pop-to-debugger-maybe)
+                   " "))
+         (propertize
+          (concat prompt "> ")
+          'face 'sly-mrepl-prompt-face
+          'font-lock-face 'sly-mrepl-prompt-face))
+        'sly-mrepl--prompt (downcase package)))
+      (move-overlay sly-mrepl--last-prompt-overlay beg (sly-mrepl--mark)))
+    (sly-mrepl--ensure-prompt-face)
+    (buffer-enable-undo)))
 
 (defun sly-mrepl--copy-part-to-repl (entry-idx value-idx)
   (sly-mrepl--copy-objects-to-repl `(,entry-idx ,value-idx)
                                    (format "Returning value %s of history entry %s"
                                            value-idx entry-idx)))
 
-(cl-defun sly-mrepl--eval-for-repl (slyfun-and-args &key insert-p before-prompt after-prompt)
+(cl-defun sly-mrepl--eval-for-repl (slyfun-and-args &key before-prompt after-prompt)
   "Evaluate SLYFUN-AND-ARGS in Slynk, then call callbacks.
 
 SLYFUN-AND-ARGS is (SLYFUN . ARGS) and is called in
 Slynk. SLYFUN's multiple return values are captured in a list and
 passed to the optional unary callbacks BEFORE-PROMPT and
 AFTER-PROMPT, called before or after prompt insertion,
-respectively.
-
-If INSERT-P is non-nil, SLYFUN's results are printable
-representations of Slynk objects and should be inserted into the
-REPL."
+respectively."
   (sly-eval-async `(slynk-mrepl:eval-for-mrepl
                     ,sly-mrepl--remote-channel
                     ',(car slyfun-and-args)
@@ -453,29 +456,28 @@ REPL."
           (sly-mrepl--catch-up)
           (when before-prompt
             (funcall before-prompt results))
-          (when insert-p
-            (sly-mrepl--insert-results results))
           (apply #'sly-mrepl--insert-prompt prompt-args)
           (when after-prompt
             (funcall after-prompt results))
-          (pop-to-buffer (current-buffer))
           (goto-char (sly-mrepl--mark))
           (insert saved-text))))))
 
-(defun sly-mrepl--copy-objects-to-repl (method-args note &optional callback)
+(defun sly-mrepl--copy-objects-to-repl (method-args &optional before after)
   "Recall objects in the REPL history as a new entry.
 METHOD-ARGS are SWANK-MREPL:COPY-TO-REPL's optional args. If nil
 then the globally saved objects that
 SLYNK-MREPL:GLOBALLY-SAVE-OBJECT stored are considered, otherwise
-it is a list (ENTRY-IDX VALUE-IDX)."
+it is a list (ENTRY-IDX VALUE-IDX).
+BEFORE and AFTER as in `sly-mrepl--save-and-copy-for-repl'"
   (sly-mrepl--eval-for-repl
    `(slynk-mrepl:copy-to-repl
      ,@method-args)
-   :insert-p t
-   :before-prompt (lambda (_objects)
-                    (when note
-                      (sly-mrepl--insert-note note)))
-   :after-prompt callback))
+   :before-prompt (if (stringp before)
+                      (lambda (objects)
+                        (sly-mrepl--insert-note before)
+                        (sly-mrepl--insert-results objects))
+                    before)
+   :after-prompt after))
 
 (defun sly-mrepl--make-result-button (result idx)
   (make-text-button (car result) nil
@@ -648,13 +650,21 @@ recent entry that is discarded."
     (run-hook-with-args 'sly-mrepl--dedicated-stream-hooks stream)
     stream))
 
-(defun sly-mrepl--save-and-copy-for-repl (note slyfun-and-args &optional callback)
+(defun sly-mrepl--save-and-copy-for-repl (slyfun-and-args &optional before after)
+  "Evaluate SLYFUN-AND-ARGS in Slynk and prepare to copy to REPL.
+BEFORE is a string inserted as a note, or a nullary function
+which is run just before the object is copied to the
+REPL. Optional BEFORE and AFTER are unary functions called with a
+list of the saved values' presentations strings and run before
+and after the the the prompt are inserted, respectively.  BEFORE
+can also be a string in which case it is inserted via
+`sly-insert-note' followed by the saved values' presentations."
   (sly-eval-async
    `(slynk-mrepl:globally-save-object ',(car slyfun-and-args)
                                       ,@(cdr slyfun-and-args))
    #'(lambda (_ignored)
        (sly-mrepl--with-repl-for (sly-connection)
-         (sly-mrepl--copy-objects-to-repl nil note callback)))))
+         (sly-mrepl--copy-objects-to-repl nil before after)))))
 
 (defun sly-mrepl--insert-call (spec objects)
   (when (<= (point) (sly-mrepl--mark))
@@ -925,7 +935,6 @@ prefix argument is given."
      `(slynk-mrepl:sync-package-and-default-directory
        :package-name ,package
        :directory ,directory)
-     :insert-p nil
      :before-prompt
      #'(lambda (results)
          (cl-destructuring-bind (package-2 directory-2) results
@@ -982,44 +991,55 @@ Doesn't clear input history."
 ;;;
 (defun sly-inspector-copy-part-to-repl (number)
   "Evaluate the inspector slot at point via the REPL (to set `*')."
-  (sly-mrepl--save-and-copy-for-repl (format "Returning inspector slot %s" number)
-                            `(slynk:inspector-nth-part-or-lose ,number)))
+  (sly-mrepl--save-and-copy-for-repl
+   `(slynk:inspector-nth-part-or-lose ,number)
+   (format "Returning inspector slot %s" number)))
 
 (defun sly-db-copy-part-to-repl (frame-id var-id)
   "Evaluate the frame var at point via the REPL (to set `*')."
   (sly-mrepl--save-and-copy-for-repl
-   (format "Returning var %s of frame %s" var-id frame-id)
-   `(slynk-backend:frame-var-value ,frame-id ,var-id)))
+   `(slynk-backend:frame-var-value ,frame-id ,var-id)
+   (format "Returning var %s of frame %s" var-id frame-id)))
+
+(defun sly-db-copy-condition-to-repl (&optional automatic)
+  "Evaluate the frame var at point via the REPL (to set `*')."
+  (sly-mrepl--save-and-copy-for-repl
+   `(slynk:sly-db-condition-object)
+   (if automatic
+          (lambda (results)
+            (sly-mrepl--insert-note "Evaluation errored on ")
+            (sly-mrepl--insert (sly-mrepl--make-result-button (car results) 0)))
+     "Returning debugger condition")))
 
 (defun sly-apropos-copy-symbol-to-repl (name _type)
   (sly-mrepl--save-and-copy-for-repl
-   (format "Returning symbol %s" name)
-   `(common-lisp:identity ',(car (read-from-string name)))))
+   `(common-lisp:identity ',(car (read-from-string name)))
+   (format "Returning symbol %s" name)))
 
 (defun sly-trace-dialog-copy-part-to-repl (id part-id type)
   "Eval the Trace Dialog entry under point in the REPL (to set *)"
   (sly-mrepl--save-and-copy-for-repl
-   (format "Returning part %s (%s) of trace entry %s" part-id type id)
-   `(slynk-trace-dialog:trace-part-or-lose ,id ,part-id ,type)))
+   `(slynk-trace-dialog:trace-part-or-lose ,id ,part-id ,type)
+   (format "Returning part %s (%s) of trace entry %s" part-id type id)))
 
 (defun sly-stickers-copy-last-recording-to-repl (sticker-id recording-id)
   (unless (and sticker-id recording-id)
     (sly-error "Sticker %s has no known recordings" sticker-id recording-id))
   (sly-mrepl--save-and-copy-for-repl
-     (format "Returning values of last recording of sticker %s" sticker-id)
-     `(slynk-stickers:find-recording-or-lose ,recording-id)))
+     `(slynk-stickers:find-recording-or-lose ,recording-id)
+     (format "Returning values of last recording of sticker %s" sticker-id)))
 
 (defun sly-db-copy-call-to-repl (frame-id spec)
   (sly-mrepl--save-and-copy-for-repl
-   (format "The actual arguments passed to frame %s" frame-id)
    `(slynk-backend:frame-arguments ,frame-id)
+   (format "The actual arguments passed to frame %s" frame-id)
    #'(lambda (objects)
        (sly-mrepl--insert-call spec objects))))
 
 (defun sly-trace-dialog-copy-call-to-repl (trace-id spec)
   (sly-mrepl--save-and-copy-for-repl
-   (format "The actual arguments passed to trace %s" trace-id)
    `(slynk-trace-dialog:trace-arguments-or-lose ,trace-id)
+   (format "The actual arguments passed to trace %s" trace-id)
    #'(lambda (objects)
        (sly-mrepl--insert-call spec objects))))
 

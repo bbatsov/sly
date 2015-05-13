@@ -2573,6 +2573,8 @@ and no continue restart available.")))))
 (defslyfun sdlb-print-condition ()
   (princ-to-string *slynk-debugger-condition*))
 
+(defslyfun sly-db-condition-object ())
+
 
 ;;;; Compilation Commands.
 

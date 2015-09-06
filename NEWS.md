@@ -1,4 +1,4 @@
-Upcaming SLY 1.0.0-beta-2 (estimated September 2015)
+Upcoming SLY 1.0.0-beta-2 (estimated September 2015)
 ----------------------------------------
 
 ### Improved `sly-stickers` contrib:
@@ -137,7 +137,7 @@ SLIME:
 - Experimental CLASP support (see `slynk/backend/clasp.lisp`).
 
 - Fix a source-path-parsing bug. A problem raised and solved by Gabor
-  Mélis in http://permalink.gmane.org/gmane.lisp.slime.devel/11543.
+  MÃ©lis in http://permalink.gmane.org/gmane.lisp.slime.devel/11543.
 
 - Hot updating via MELPA on won't cause SLYNK/SLY version mismatch
 
